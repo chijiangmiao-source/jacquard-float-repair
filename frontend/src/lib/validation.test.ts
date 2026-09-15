@@ -22,6 +22,12 @@ describe("validateForm", () => {
     });
   });
 
+  it("容忍 textarea 末尾单个换行，仍视为合法", () => {
+    const { errors, value } = validateForm({ ...valid, rowsText: "01\n10\n01\n" });
+    expect(errors).toEqual([]);
+    expect(value?.rows).toEqual(["01", "10", "01"]);
+  });
+
   it.each([
     ["非法字符", { ...valid, rowsText: "02\n10\n01" }],
     ["非等长行", { ...valid, rowsText: "0\n10\n01" }],
@@ -36,6 +42,12 @@ describe("validateForm", () => {
     ["L为0", { ...valid, maxFloatText: "0" }],
     ["非数字", { ...valid, heightText: "abc" }],
     ["空矩阵", { ...valid, rowsText: "" }],
+    ["夹空行", { ...valid, rowsText: "01\n\n10" }],
+    ["前导空行", { ...valid, heightText: "4", rowsText: "\n01\n10\n01" }],
+    ["行内空格", { ...valid, rowsText: "0 1\n10\n01" }],
+    ["行尾空格", { ...valid, rowsText: "01 \n10\n01" }],
+    ["制表符", { ...valid, rowsText: "01\n\t10\n01" }],
+    ["全角空格", { ...valid, rowsText: "01\n1　0\n01" }],
   ])("拒绝：%s", (_name, form) => {
     const { errors, value } = validateForm(form);
     expect(errors.length).toBeGreaterThan(0);

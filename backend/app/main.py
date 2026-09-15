@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from .solver import InfeasibleError, repair
 from .validation import classify_cell, validate_request, ValidationError
@@ -20,12 +21,14 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
+    # 显式 async：直接在事件循环上响应，不占用求解线程池，
+    # 因而即使有复杂纹板正在求解，健康检查仍即时返回。
     return {"status": "ok"}
 
 
 @app.post("/api/repair")
-async def repair_matrix(request: Request) -> dict:
+async def repair_matrix(request: Request) -> JSONResponse:
     # 接收原始 JSON，所有字段校验（含类型、非法字符、非等长行）统一由
     # validate_request 一次性完成；任一不合法都整次拒绝。
     try:
@@ -44,6 +47,12 @@ async def repair_matrix(request: Request) -> dict:
             content={"ok": False, "errors": exc.errors},
         )
 
+    # CP-SAT 求解是 CPU 密集的同步调用，放入线程池执行，避免阻塞事件循环：
+    # 求解期间 /health 与其他用户的请求仍可正常响应。
+    return await run_in_threadpool(_solve_and_render, grid, H, W, K, L)
+
+
+def _solve_and_render(grid, H, W, K, L) -> JSONResponse:
     try:
         result = repair(grid, H, W, K, L)
     except InfeasibleError as exc:
@@ -74,14 +83,17 @@ async def repair_matrix(request: Request) -> dict:
             )
         diff.append(diff_row)
 
-    return {
-        "ok": True,
-        "height": H,
-        "width": W,
-        "picks": K,
-        "max_float": L,
-        "matrix": matrix,
-        "diff": diff,
-        "changes": result.changes,
-        "solve_seconds": round(result.solve_seconds, 4),
-    }
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "height": H,
+            "width": W,
+            "picks": K,
+            "max_float": L,
+            "matrix": matrix,
+            "diff": diff,
+            "changes": result.changes,
+            "solve_seconds": round(result.solve_seconds, 4),
+        },
+    )

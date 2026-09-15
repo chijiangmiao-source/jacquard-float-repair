@@ -46,12 +46,25 @@ export function validateForm(form: RawForm): {
     errors.push(`宽度必须是 ${MIN_W}～${MAX_W} 的整数`);
   }
 
-  const lines = form.rowsText.split("\n").map((l) => l.trim());
-  const rows = lines.filter((l) => l.length > 0);
-  if (rows.length === 0) {
+  // 不做 trim、不过滤空行：空行与空格都是非法输入，必须整次拒绝。
+  // 仅容忍 textarea 末尾因回车产生的唯一一个尾随空串。
+  const rawLines = form.rowsText.split("\n");
+  if (rawLines.length > 1 && rawLines[rawLines.length - 1] === "") {
+    rawLines.pop();
+  }
+  const rows = rawLines;
+  if (rows.length === 0 || rows.every((l) => l === "")) {
     errors.push("矩阵不能为空，每行输入一个由 0、1、? 组成的字符串");
   }
   rows.forEach((row, idx) => {
+    if (row === "") {
+      errors.push(`第 ${idx + 1} 行是空行（不允许夹空行）`);
+      return;
+    }
+    if (/[ \t　]/.test(row)) {
+      errors.push(`第 ${idx + 1} 行含空格（不允许夹空格）`);
+      return;
+    }
     const bad = [...row].filter((c) => !ALLOWED.has(c));
     if (bad.length > 0) {
       errors.push(
@@ -64,15 +77,17 @@ export function validateForm(form: RawForm): {
     errors.push(`矩阵行数 ${rows.length} 与高度 ${height} 不一致`);
   }
 
-  if (width !== null && rows.length > 0) {
-    const lengths = new Set(
-      rows
-        .filter((r) => [...r].every((c) => ALLOWED.has(c)))
-        .map((r) => r.length),
-    );
-    if (lengths.size > 1) {
+  const structurallyValid = rows.filter(
+    (r) => r !== "" && !/[ \t　]/.test(r) && [...r].every((c) => ALLOWED.has(c)),
+  );
+  if (width !== null && structurallyValid.length > 0) {
+    const lengths = new Set(structurallyValid.map((r) => r.length));
+    if (structurallyValid.length === rows.length && lengths.size > 1) {
       errors.push("矩阵各行长度不等（必须为等长矩阵）");
-    } else if (lengths.size === 1 && [...lengths][0] !== width) {
+    } else if (
+      structurallyValid.length === rows.length &&
+      [...lengths][0] !== width
+    ) {
       errors.push(`行宽 ${[...lengths][0]} 与宽度 ${width} 不一致`);
     }
   }

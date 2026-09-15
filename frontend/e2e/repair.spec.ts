@@ -93,6 +93,33 @@ test("非等长行整次拒绝且不残留旧解", async ({ page }) => {
   await expect(page.getByTestId("result-grid")).toHaveCount(0);
 });
 
+test("夹空行或空格整次拒绝，且不得自动删行后继续求解", async ({ page }) => {
+  await page.goto("/");
+  // 先求出一个合法结果
+  await fillAll(page, {
+    H: "4", W: "2", K: "1", L: "3", rows: "10\n10\n01\n10",
+  });
+  await submit(page);
+  await expect(page.getByTestId("result-grid")).toBeVisible();
+
+  // 在矩阵中间插入空行（高度仍填 4，行数变成 5，且确实夹了空行）
+  await fillAll(page, {
+    H: "4", W: "2", K: "1", L: "3", rows: "10\n10\n\n01\n10",
+  });
+  await submit(page);
+  await expect(page.getByText(/是空行/)).toBeVisible();
+  await expect(page.getByTestId("result-grid")).toHaveCount(0);
+  await expect(page.getByTestId("changes-total")).toHaveCount(0);
+
+  // 改为夹空格：同样必须拒绝，不能 trim 后照解
+  await fillAll(page, {
+    H: "4", W: "2", K: "1", L: "3", rows: "1 0\n10\n01\n10",
+  });
+  await submit(page);
+  await expect(page.getByText(/空格/)).toBeVisible();
+  await expect(page.getByTestId("result-grid")).toHaveCount(0);
+});
+
 test("越界参数被拒绝", async ({ page }) => {
   await page.goto("/");
   await fillAll(page, {
