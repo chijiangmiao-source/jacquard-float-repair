@@ -1,0 +1,40 @@
+# 提花纹板修复器：前端 web + 后端 api + 一次性验收 verify
+# 宿主端口可用环境变量覆盖：WEB_PORT（默认 8080）、API_PORT（默认 8000）。
+#   docker compose up --build
+#   docker compose run --rm verify      # 一次性验收
+
+services:
+  api:
+    build:
+      context: ./backend
+    image: jacquard-api:latest
+    ports:
+      # 仅需直连 API 时使用；前端经容器网络访问 api:8000
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+    image: jacquard-web:latest
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile.verify
+    image: jacquard-verify:latest
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      API_HEALTH_URL: http://api:8000/health
+      WEB_URL: http://web
+    profiles: ["verify"]
+    restart: "no"

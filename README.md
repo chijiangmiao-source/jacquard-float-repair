@@ -1,0 +1,194 @@
+# 提花纹板循环浮长修复器
+
+破损提花纹板会**同时丢孔和误孔**。逐格修补虽能让每纬达到抬综数，却可能在
+纹样首尾接合处形成超长浮线。本仓库实现一个**真实联调**的修复器：
+
+- 前端 React + TypeScript + Vite 页面录入纹板与参数；
+- 后端 FastAPI 用 **CP-SAT（0-1 整数规划）真实求解**，输出总改动最少的修复矩阵；
+- 页面给出**逐格差异视图**，区分原孔、补孔（纠正丢孔）与改孔（纠正误孔）；
+- 若不存在同时满足逐纬容量与循环浮长的矩阵，明确显示**不可修复**并清除旧解。
+
+无任何固定响应、假接口或占位实现。
+
+---
+
+## 1. 输入与约束
+
+| 项目 | 含义 | 取值 |
+| --- | --- | --- |
+| 高度 H | 纬数（行数） | 2 ～ 200 |
+| 宽度 W | 列数 | 2 ～ 10 |
+| 矩阵 | 每纬一个等长字符串 | 字符仅为 `0`、`1`、`?` |
+| K | 每纬必须恰有的孔数（1 数） | 0 ～ W |
+| L | 最大循环浮长 | 1 ～ H |
+
+- `?` 表示缺失格，其取值**不计改动**；只有输入为 `0/1` 且结果相反才计一次改动
+  （`0→1` 为补孔，`1→0` 为改孔）。
+- 非法字符、非等长行、行数/行宽与 H/W 不符、参数越界，都会**整次拒绝**
+  （HTTP 400，返回全部错误），前端立即清除上次结果，不残留旧纹板。
+
+### 循环浮长约束（含首尾相接）
+
+对每一列，把**末行与首行相接**形成环，环上连续相同位（全 0 或全 1）的游程长度
+均不得超过 L。注意约束是“每列环形”的：
+
+- 即使所有不跨接缝的窗口都混合，只要**跨首尾**窗口出现 L+1 连等，候选也必须排除
+  （后端测试 `test_seam_only_violation_is_excluded`、E2E
+  “仅跨首尾才超限的候选被排除”覆盖此情形）；
+- H 为奇数且 L=1 时，列上要求逐格交替，奇环无解（返回不可修复）；
+- K=0（或 K=W）时整列恒为 0（或 1），环上有 H 连等，仅当 L=H 才可行。
+
+### 复算方法（如何手工/程序核对结果）
+
+对返回矩阵 `M`（H 行 W 列）：
+
+1. **逐纬容量**：对每一行 `i`，数 `Σ_j M[i][j]`，必须恰等于 K。
+2. **循环浮长**：对每一列 `j`，取环形序列
+   `M[0][j], M[1][j], …, M[H-1][j], M[0][j], …`，
+   数最长连续相同位长度：
+   - 若整列全等，游程就是 H（首尾是同一批格，不能多算一格）；
+   - 否则从任一个“与上一格不同”的位置断开，线性扫一圈取最大游程。
+   该最大值必须 ≤ L。
+3. **改动总数**：逐格比较输入与结果，仅 `0↔1` 的改变各计 1，`?` 格不计；
+   加总必须等于返回的 `changes`。页面同时显示补孔数与改孔数，二者之和即 `changes`。
+4. **最优性判据**：小规模时可枚举全部“每行恰 K 个 1”的矩阵（共
+   `C(W,K)^H` 个），过滤满足上述两条者，取改动最小、并列时按行优先展开
+   （0 小于 1）字典序最小者。`backend/tests/test_solver.py` 中的 240 组
+   随机小例即用该穷举判据逐一核对。
+
+---
+
+## 2. 求解算法（真实优化，非逐格贪心）
+
+贪心逐格修补无法保证全局改动最少，也无法正确处理首尾接缝。算法在
+`backend/app/solver.py`，为 0-1 整数规划（Google OR-Tools CP-SAT）：
+
+- 决策变量 `x[i][j] ∈ {0,1}`：修复后第 i 纬第 j 列是否有孔。
+- 逐纬容量：`Σ_j x[i][j] = K`。
+- 循环浮长：**“环上无 L+1 连等”等价于“每个长 L+1 的环形窗口内
+  `1 ≤ Σx ≤ L`”**——全 0 窗口触发下界、全 1 窗口触发上界。因此对每列的每个
+  环形起点加这两条不等式即可，跨首尾窗口天然包含在内。L=H 时整列至多 H 连等，
+  约束自动成立。
+- 改动：对每个非 `?` 格引入指示变量 `g[i][j]`
+  （输入 0 时 `g=x`；输入 1 时 `g=1-x`），最小化 `Σg`。
+- 字典序裁决：2000 个二进制变量无法用单个 int64 权值编码全序。求得最少改动数
+  C\* 后将其固定，把行优先位流切成 **60 位一块**，逐块用权 `2^59…2^0` 的加权和
+  最小化并固定该块，由高位块到低位块依次进行，得到
+  “行优先、0<1”的字典序最小解。
+
+无解时 CP-SAT 返回 INFEASIBLE，API 以 HTTP 422 明确标记 `infeasible: true`。
+
+---
+
+## 3. 页面差异视图
+
+| 标记 | 类别 | 含义 | 是否计改动 |
+| --- | --- | --- | --- |
+| ● | 原孔 `original_hole` | 输入 1，结果仍 1 | 否 |
+| ◆ | 补孔 `added_hole` | 输入 0 → 结果 1（纠正丢孔） | 是 |
+| ○ | 改孔 `removed_hole` | 输入 1 → 结果 0（纠正误孔） | 是 |
+| · | 原空 `kept_blank` | 输入 0，结果仍 0 | 否 |
+| ◇ | 缺失定孔 `unknown_hole` | `? → 1` | 否 |
+| · | 缺失定空 `unknown_blank` | `? → 0` | 否 |
+
+页面顶部显示**改动总数**以及补孔/改孔分项数；表格每格同时显示
+`输入→输出` 与颜色分类。
+
+---
+
+## 4. 快速开始（Docker Compose，推荐）
+
+```bash
+docker compose up --build
+# 打开 http://localhost:8080
+# 仅直连 API：http://localhost:8000  （/health、/docs）
+```
+
+覆盖宿主端口：
+
+```bash
+WEB_PORT=9090 API_PORT=9000 docker compose up --build
+```
+
+### 一次性验收服务 verify
+
+构建并运行**一次性**验收容器：先跑后端 pytest 与前端 Vitest，再等待 compose
+中真实的 api/web 健康后，对它们运行 Playwright 端到端测试，结束即退出：
+
+```bash
+docker compose build api web verify
+docker compose run --rm verify
+```
+
+> 注：verify 位于 compose 的 `verify` profile，`docker compose up` 默认不会启动它，
+> 它只会随 `docker compose run verify` 运行一次。
+
+---
+
+## 5. 本地开发（不用 Docker）
+
+后端（需要 Python 3.13）：
+
+```bash
+cd backend
+python3.13 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port "${API_PORT:-8000}"
+```
+
+前端（Node 20+）：
+
+```bash
+cd frontend
+npm install
+npm run dev        # 读取 API_PORT（默认 8000）代理 /api 到后端
+# 宿主端口由 WEB_PORT（默认 80）控制：WEB_PORT=5173 npm run dev
+```
+
+生产构建：`npm run build`（先 `tsc -b` 类型检查，再 Vite 构建）。
+
+---
+
+## 6. 测试
+
+```bash
+# 后端：30 项，含 240 组随机小例与暴力枚举的最优值/裁决核对
+cd backend && pytest
+
+# 前端单元：录入校验 + 录入到结果/拒绝/不可修复的组件流程
+cd frontend && npm run test
+
+# 端到端（真实 FastAPI + 真实页面）：自动拉起两端后跑 Chromium
+cd frontend && npx playwright install chromium
+npx playwright test
+# 或对已启动的服务运行：E2E_BASE_URL=http://localhost:8080 npx playwright test
+```
+
+E2E 覆盖：
+
+1. 合法录入 → 求解 → 页面显示改动总数与分类，并在测试内**逐格复算**逐纬容量与
+   环形浮长；
+2. 非法字符提交 → 整次拒绝、旧结果消失；
+3. 非等长行、K 越界 → 拒绝且无结果；
+4. 不可修复（奇环 L=1）→ 明确提示且不残留上次纹板；
+5. 仅跨首尾才超限的候选 → 被接缝约束排除（L=2 被迫改动，L=3 零改动）。
+
+---
+
+## 7. 仓库结构
+
+```
+backend/
+  app/solver.py       # CP-SAT 建模：容量 + 环形窗口浮长 + 最少改动 + 字典序裁决
+  app/validation.py   # 整次拒绝校验、逐格分类
+  app/main.py         # FastAPI：POST /api/repair，GET /health
+  tests/              # pytest（穷举判据、接缝特例、接口 400/422）
+frontend/
+  src/lib/            # 类型、前端校验、API 客户端
+  src/components/     # 逐格差异结果视图
+  src/App.tsx         # 录入页（拒绝/不可修复时清除旧解）
+  e2e/                # Playwright 真实联调用例
+Dockerfile.verify     # 一次性验收镜像（pytest + Vitest + Playwright）
+scripts/verify.sh     # 验收编排
+docker-compose.yml    # api / web / verify，WEB_PORT、API_PORT 可覆盖
+```

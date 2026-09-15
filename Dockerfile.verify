@@ -1,0 +1,38 @@
+# 一次性验收镜像：Python 3.13（pytest）+ Node 20（Vitest）+ Playwright Chromium（E2E）
+FROM python:3.13-slim-bookworm
+
+ARG NODE_VERSION=20.20.2
+ARG TARGETARCH
+
+# 运行验收脚本所需的基础工具；Playwright 浏览器系统库稍后用其自带脚本安装。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# 按目标架构取官方 Node 预编译包，安装到 /opt/node（不覆盖 Python 的 /usr/local）
+RUN case "${TARGETARCH}" in \
+        amd64) NODE_ARCH=x64 ;; \
+        arm64) NODE_ARCH=arm64 ;; \
+        *) echo "不支持的架构: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+        | tar -xJ -C /opt \
+    && ln -s "/opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}" /opt/node
+ENV PATH=/opt/node/bin:$PATH
+
+WORKDIR /workspace
+
+# 后端依赖（含 pytest、FastAPI、ortools）
+COPY backend/requirements.txt /workspace/backend/requirements.txt
+RUN pip install --no-cache-dir -r /workspace/backend/requirements.txt
+
+# 前端依赖与 Playwright Chromium（容器内为 root，直接安装浏览器所需系统库）
+COPY frontend/package.json frontend/package-lock.json* /workspace/frontend/
+RUN cd /workspace/frontend \
+    && npm ci \
+    && npx playwright install --with-deps chromium
+
+COPY . /workspace
+
+CMD ["bash", "scripts/verify.sh"]
