@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .solver import InfeasibleError, repair
+from .inspect import run_inspect, validate_inspect_payload
 from .validation import classify_cell, validate_request, ValidationError
 
 app = FastAPI(title="提花纹板修复器", version="1.0.0")
@@ -95,5 +96,61 @@ def _solve_and_render(grid, H, W, K, L) -> JSONResponse:
             "diff": diff,
             "changes": result.changes,
             "solve_seconds": round(result.solve_seconds, 4),
+        },
+    )
+
+
+@app.post("/api/inspect")
+async def inspect_matrix(request: Request) -> JSONResponse:
+    # 试打核验：以已批准的修复矩阵（请求内随附）为基准，对设备回读矩阵做
+    # 有界环形序列对齐。本接口不重新求解、不改写纹板；非法输入只拒绝本次
+    # 核验（HTTP 400），由前端保留现有修复结果。
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "errors": ["请求体必须是合法 JSON"]},
+        )
+
+    try:
+        ref_rows, read_rows, bound = validate_inspect_payload(payload)
+    except ValidationError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "errors": exc.errors},
+        )
+
+    return await run_in_threadpool(_inspect_and_render, ref_rows, read_rows, bound)
+
+
+def _inspect_and_render(ref_rows, read_rows, bound) -> JSONResponse:
+    try:
+        result = run_inspect(ref_rows, read_rows, bound)
+    except RuntimeError as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "errors": [f"对齐失败：{exc}"]},
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "height": len(ref_rows),
+            "width": len(ref_rows[0]),
+            "readback_rows": len(read_rows),
+            "max_misses": bound,
+            "direction": result.direction,
+            "start_pick": result.start_pick,
+            "score": result.score,
+            "event_count": result.event_count,
+            "miss_count": result.miss_count,
+            "repeat_count": result.repeat_count,
+            "mismatch_picks": result.mismatch_picks,
+            "mismatch_cells": result.mismatch_cells,
+            "mapping": [list(m) for m in result.mapping],
+            "events": list(result.events),
+            "timeline": list(result.timeline),
         },
     )

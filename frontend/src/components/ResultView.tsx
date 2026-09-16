@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { CellKind, RepairResponse } from "../lib/types";
+import { InspectPanel } from "./InspectPanel";
 
 const KIND_LABEL: Record<CellKind, string> = {
   original_hole: "原孔（1→1）",
@@ -30,6 +32,14 @@ export function ResultView({ result }: { result: RepairResponse }) {
   const changedCells = result.diff.flat().filter((c) => c.counts_as_change);
   const added = changedCells.filter((c) => c.kind === "added_hole").length;
   const removed = changedCells.filter((c) => c.kind === "removed_hole").length;
+  // 核验时间线点选异常纬时，同时高亮修复矩阵对应基准纬与回读行。
+  const [selectedRefPick, setSelectedRefPick] = useState<number | null>(null);
+  const [selectedReadSeq, setSelectedReadSeq] = useState<number | null>(null);
+
+  function handleSelect(refPick: number | null, readSeq: number | null) {
+    setSelectedRefPick(refPick);
+    setSelectedReadSeq(readSeq);
+  }
 
   const legends: CellKind[] = [
     "original_hole",
@@ -39,6 +49,9 @@ export function ResultView({ result }: { result: RepairResponse }) {
     "unknown_hole",
     "unknown_blank",
   ];
+
+  // 已批准修复矩阵的 0/1 行串，作为试打核验的基准。
+  const matrixRows = result.matrix.map((row) => row.join(""));
 
   return (
     <section className="result" aria-label="修复结果">
@@ -70,7 +83,12 @@ export function ResultView({ result }: { result: RepairResponse }) {
           <table className="grid" data-testid="result-grid">
             <tbody>
               {result.diff.map((row, i) => (
-                <tr key={i}>
+                <tr
+                  key={i}
+                  id={`ref-row-${i + 1}`}
+                  className={selectedRefPick === i + 1 ? "row-highlight" : ""}
+                  data-ref-pick={i + 1}
+                >
                   <th className="rownum">{i + 1}</th>
                   {row.map((cell, j) => (
                     <td
@@ -98,7 +116,10 @@ export function ResultView({ result }: { result: RepairResponse }) {
           <table className="grid plain">
             <tbody>
               {result.matrix.map((row, i) => (
-                <tr key={i}>
+                <tr
+                  key={i}
+                  className={selectedRefPick === i + 1 ? "row-highlight" : ""}
+                >
                   <th className="rownum">{i + 1}</th>
                   {row.map((bit, j) => (
                     <td key={j} className={bit === 1 ? "one" : "zero"}>
@@ -111,6 +132,15 @@ export function ResultView({ result }: { result: RepairResponse }) {
           </table>
         </div>
       </div>
+
+      <InspectPanel
+        height={result.height}
+        width={result.width}
+        matrixRows={matrixRows}
+        selectedRefPick={selectedRefPick}
+        selectedReadSeq={selectedReadSeq}
+        onSelect={handleSelect}
+      />
     </section>
   );
 }

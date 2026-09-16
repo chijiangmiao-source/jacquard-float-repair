@@ -160,3 +160,102 @@ test("仅跨首尾才超限的候选被排除（L=2 被迫改动，L=3 零改动
   await expect(page.getByTestId("changes-total")).toContainText("改动总数：2");
   await expect(page.locator("td.kind-added_hole, td.kind-removed_hole")).toHaveCount(2);
 });
+
+// ---- 试打核验 ------------------------------------------------------------
+
+async function repairDistinctMatrix(page: import("@playwright/test").Page) {
+  // H=4 W=3 K=1 L=3：100/010/001/100 本身可行（环上最长连等为 2），0 改动，
+  // 四纬互不相同的程度足以唯一区分正/反向与起点。
+  await page.goto("/");
+  await fillAll(page, {
+    H: "4", W: "3", K: "1", L: "3", rows: "100\n010\n001\n100",
+  });
+  await submit(page);
+  await expect(page.getByTestId("changes-total")).toContainText("改动总数：0");
+  await expect(page.getByLabel("试打核验")).toBeVisible();
+}
+
+test("核验成功：孔位不符可点选，同时定位修复矩阵基准行与回读行", async ({ page }) => {
+  await repairDistinctMatrix(page);
+
+  // 第 2 纬 010 回读成 000（1 孔不符），其余一致；正向、起点 1。
+  await page.getByLabel("设备回读矩阵").fill("100\n000\n001\n100");
+  await page.getByRole("button", { name: "发起试打核验" }).click();
+
+  await expect(page.getByTestId("inspect-result")).toBeVisible();
+  await expect(page.getByTestId("inspect-direction")).toContainText("正向");
+  await expect(page.getByTestId("inspect-start")).toContainText("起始纬号：1");
+  await expect(page.getByTestId("inspect-score")).toContainText("总分：1");
+  await expect(page.getByTestId("inspect-mismatch")).toContainText("1 纬 / 1 孔");
+
+  const timeline = page.getByTestId("inspect-timeline");
+  await expect(timeline.locator("[data-status='hole_mismatch']")).toHaveCount(1);
+  await expect(timeline.locator("[data-status='match']")).toHaveCount(3);
+
+  // 点选异常纬（时间线第 1 条 = 基准纬 1 / 回读行 1）
+  await page.getByTestId("timeline-0").click();
+  await expect(page.locator("tr[data-ref-pick='1'].row-highlight")).toHaveCount(1);
+  await expect(
+    page.locator(".readback-grid tr[data-read-seq='1'].row-highlight"),
+  ).toHaveCount(1);
+  // 其他行未高亮
+  await expect(page.locator("tr[data-ref-pick='2'].row-highlight")).toHaveCount(0);
+
+  // 点选匹配纬（基准纬 2 / 回读行 2），高亮切换
+  await page.getByTestId("timeline-1").click();
+  await expect(page.locator("tr[data-ref-pick='1'].row-highlight")).toHaveCount(0);
+  await expect(page.locator("tr[data-ref-pick='2'].row-highlight")).toHaveCount(1);
+  await expect(
+    page.locator(".readback-grid tr[data-read-seq='2'].row-highlight"),
+  ).toHaveCount(1);
+});
+
+test("核验识别反向跨首尾对齐（从第 1 纬反向采集）", async ({ page }) => {
+  await repairDistinctMatrix(page);
+
+  // 从第 1 纬反向、跨首尾采集：pick1=100, pick4=100, pick3=001, pick2=010。
+  await page.getByLabel("设备回读矩阵").fill("100\n100\n001\n010");
+  await page.getByRole("button", { name: "发起试打核验" }).click();
+
+  await expect(page.getByTestId("inspect-result")).toBeVisible();
+  await expect(page.getByTestId("inspect-direction")).toContainText("反向");
+  await expect(page.getByTestId("inspect-start")).toContainText("起始纬号：1");
+  await expect(page.getByTestId("inspect-score")).toContainText("总分：0");
+  await expect(page.getByText(/核验通过：全部逐纬匹配/)).toBeVisible();
+  await expect(
+    page.getByTestId("inspect-timeline").locator("[data-status='match']"),
+  ).toHaveCount(4);
+});
+
+test("核验输入非法或行数超界：仅清本次核验，修复结果保留", async ({ page }) => {
+  await repairDistinctMatrix(page);
+
+  // 1) 非法字符：前端整次拒绝，不出现核验结果，但修复差异视图仍在。
+  await page.getByLabel("设备回读矩阵").fill("102\n010\n001\n100");
+  await page.getByRole("button", { name: "发起试打核验" }).click();
+  await expect(page.getByLabel("核验录入提示")).toBeVisible();
+  await expect(page.getByText(/非法字符/)).toBeVisible();
+  await expect(page.getByTestId("inspect-result")).toHaveCount(0);
+  await expect(page.getByTestId("result-grid")).toBeVisible();
+  await expect(page.getByTestId("changes-total")).toContainText("改动总数：0");
+
+  // 2) 行数超出 H±上限：上限取 1（允许 3～5 行），粘贴 6 行。
+  await page.getByLabel("送料错纬上限").fill("1");
+  await page
+    .getByLabel("设备回读矩阵")
+    .fill("100\n010\n001\n100\n100\n010");
+  await page.getByRole("button", { name: "发起试打核验" }).click();
+  await expect(page.getByText(/超出/)).toBeVisible();
+  await expect(page.getByTestId("inspect-result")).toHaveCount(0);
+  // 修复结果与原差异视图完整保留
+  await expect(page.getByTestId("result-grid")).toBeVisible();
+  await expect(page.getByTestId("changes-total")).toContainText("改动总数：0");
+  await expect(page.locator("td.kind-original_hole").first()).toBeVisible();
+
+  // 3) 改回合法回读仍可正常核验（证明没有污染已批准纹板）。
+  await page.getByLabel("送料错纬上限").fill("2");
+  await page.getByLabel("设备回读矩阵").fill("100\n010\n001\n100");
+  await page.getByRole("button", { name: "发起试打核验" }).click();
+  await expect(page.getByTestId("inspect-result")).toBeVisible();
+  await expect(page.getByText(/核验通过/)).toBeVisible();
+});
