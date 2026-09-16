@@ -41,11 +41,16 @@
 方向与起点在事件路径之前裁决：先用可加 DP 对每个假设求最小 (总分, 事件数)，
 选出全局最优假设（方向优先、起点最小）；再对该假设做带路径裁决的 DP。
 
-事件路径可加编码：把排序槽位 (种类秩, 物理纬号) 依次编号，越早的槽位赋越高
-的 B 进制权（B=32 > 任一槽位最大重数 D ≤ 20，无进位），路径里每个事件贡献
-其槽位权（同纬被重纬 k 次则贡献 k 倍）。排序元组中越早槽位的条目越多，元组
-字典序越小（(a,a)＜(a,b)），故字典序最小等价于该加权和最大；权值只与事件
-所在槽位有关、与边的出现顺序无关，可在环形旋转下严格可加。
+事件路径可加编码：每个事件（**含匹配**）记 (种类秩, 物理纬号)，种类秩
+匹配 0 < 漏纬 1 < 重纬 2；把 3H 个排序槽位依次编号，越早的槽位赋越高的
+B 进制权（B=32 > 重纬单槽最大重数 D=20，无进位），路径里每个事件贡献其槽位
+权（同纬被重纬 k 次则贡献 k 倍；匹配、漏纬每纬至多一次）。排序元组中越早
+槽位的条目越多，元组字典序越小（(a,a)＜(a,b)），故字典序最小等价于该加权
+和最大；权值只与事件槽位有关、与边的出现顺序无关，可在环形旋转下严格可加。
+
+匹配必须参与路径裁决：当若干基准纬相同、回读行数更少时，“先读到靠前的纬、
+漏纬靠后”（匹配@1,漏纬@2）与“先漏后读”（漏纬@1,匹配@2）总分相同，前者
+排序元组首位为匹配@1，字典序更小——即漏纬应标在未读到的靠后纬，而非第一纬。
 """
 
 from __future__ import annotations
@@ -188,11 +193,12 @@ def _physical(start0: int, rotated: int, direction: str, H: int) -> int:
 
 
 def _slot_weights(H: int, base: int) -> tuple[int, ...]:
-    """2H 个错纬事件槽位各自的 B 进制权（槽位越早权越高）。
+    """3H 个事件槽位各自的 B 进制权（槽位越早权越高）。
 
-    槽位 0…H-1 为漏纬（按物理纬号升序），H…2H-1 为重纬（按物理纬号升序）。
+    槽位 0…H-1 为匹配（按物理纬号），H…2H-1 为漏纬，2H…3H-1 为重纬；
+    三类事件（含匹配）共同决定排序后事件路径的字典序。
     """
-    return tuple(base ** (2 * H - 1 - slot) for slot in range(2 * H))
+    return tuple(base ** (3 * H - 1 - slot) for slot in range(3 * H))
 
 
 def _match_costs(ref: list[str], read: list[str]) -> tuple:
@@ -338,10 +344,12 @@ def _dp_phase2(
                 continue
 
             if i > 0 and j > 0 and rows_pred[i - 1][j - 1]:
-                ns = rows_sc[i - 1][j - 1] + cost_table[phys_of_i[i - 1]][j - 1]
+                phys = phys_of_i[i - 1]
+                ns = rows_sc[i - 1][j - 1] + cost_table[phys][j - 1]
                 relax(
                     i, j, 1,
-                    ns, rows_ev[i - 1][j - 1], rows_pw[i - 1][j - 1],
+                    ns, rows_ev[i - 1][j - 1],
+                    rows_pw[i - 1][j - 1] + weights[phys],
                     rows_mn[i - 1][j - 1], rows_rn[i - 1][j - 1],
                 )
 
@@ -351,7 +359,7 @@ def _dp_phase2(
                     i, j, 2,
                     rows_sc[i - 1][j] + W,
                     rows_ev[i - 1][j] + 1,
-                    rows_pw[i - 1][j] + weights[phys],
+                    rows_pw[i - 1][j] + weights[H + phys],
                     rows_mn[i - 1][j] + 1,
                     rows_rn[i - 1][j],
                 )
@@ -362,7 +370,7 @@ def _dp_phase2(
                     i, j, 3,
                     rows_sc[i][j - 1] + W + cost_table[phys][j - 1],
                     rows_ev[i][j - 1] + 1,
-                    rows_pw[i][j - 1] + weights[H + phys],
+                    rows_pw[i][j - 1] + weights[2 * H + phys],
                     rows_mn[i][j - 1],
                     rows_rn[i][j - 1] + 1,
                 )

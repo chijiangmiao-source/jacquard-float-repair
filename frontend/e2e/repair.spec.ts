@@ -227,6 +227,39 @@ test("核验识别反向跨首尾对齐（从第 1 纬反向采集）", async ({
   ).toHaveCount(4);
 });
 
+test("相同纹板行只回读一纬：漏纬标在靠后的重复纬（第二纬）而非第一纬", async ({ page }) => {
+  await page.goto("/");
+  // H=2 W=2 K=1 L=2：两行均为 10（环上连等为 2，L=2 可行），0 改动。
+  await fillAll(page, { H: "2", W: "2", K: "1", L: "2", rows: "10\n10" });
+  await submit(page);
+  await expect(page.getByTestId("changes-total")).toContainText("改动总数：0");
+
+  // 只回读到一纬：应判定为“读到第 1 纬、漏掉第 2 纬”。
+  await page.getByLabel("送料错纬上限").fill("1");
+  await page.getByLabel("设备回读矩阵").fill("10");
+  await page.getByRole("button", { name: "发起试打核验" }).click();
+
+  await expect(page.getByTestId("inspect-result")).toBeVisible();
+  await expect(page.getByTestId("inspect-events")).toContainText("漏纬 1 / 重纬 0");
+  const timeline = page.getByTestId("inspect-timeline");
+  await expect(timeline.locator("[data-status='match']")).toHaveCount(1);
+  const miss = timeline.locator("[data-status='missing_pick']");
+  await expect(miss).toHaveCount(1);
+  // 漏纬锚定的是基准第 2 纬
+  await expect(miss.first()).toHaveAttribute("data-ref-pick", "2");
+  await expect(timeline.locator("[data-status='match']").first()).toHaveAttribute(
+    "data-ref-pick",
+    "1",
+  );
+
+  // 点选漏纬条目：高亮修复矩阵第 2 行，且第 1 行不高亮
+  await miss.first().click();
+  await expect(page.locator("tr[data-ref-pick='2'].row-highlight")).toHaveCount(1);
+  await expect(page.locator("tr[data-ref-pick='1'].row-highlight")).toHaveCount(0);
+  // 漏纬没有回读行，回读表无高亮
+  await expect(page.locator(".readback-grid tr.row-highlight")).toHaveCount(0);
+});
+
 test("核验输入非法或行数超界：仅清本次核验，修复结果保留", async ({ page }) => {
   await repairDistinctMatrix(page);
 

@@ -76,6 +76,8 @@ def _brute_inspect(ref, read, D):
                         score += sum(
                             a != b for a, b in zip(ref[phys], read[j])
                         )
+                        # 匹配事件同样参与路径裁决（种类秩 0）。
+                        path_slots.append((0, phys + 1))
                         i += 1
                         j += 1
                     elif s == EDGE_MISS:
@@ -207,6 +209,46 @@ def test_missing_pick_event_scores_W():
     # 基准纬→回读纬映射：漏纬为空，其余连续。
     assert [list(m) for m in r.mapping] == [[1], [], [2], [3]]
     assert [e["kind"] for e in r.events] == [STATUS_MISS]
+
+
+def test_identical_rows_missing_marked_on_later_pick():
+    # 相同纹板行只回读到一纬时，漏纬必须标到靠后的重复纬（第二纬），
+    # 而不是第一纬：路径按 匹配<漏纬 排序后，(匹配@1,漏纬@2) 小于
+    # (漏纬@1,匹配@2)。
+    r = run_inspect(["10", "10"], ["10"], 1)
+    assert r.score == 2 and r.event_count == 1
+    assert r.miss_count == 1
+    assert [e["ref_pick"] for e in r.events] == [2]
+    assert [list(m) for m in r.mapping] == [[1], []]
+    miss = [t for t in r.timeline if t["kind"] == STATUS_MISS]
+    assert len(miss) == 1 and miss[0]["ref_pick"] == 2
+    aligned = [t for t in r.timeline if t["kind"] == "aligned"]
+    assert [t["ref_pick"] for t in aligned] == [1]
+
+
+def test_identical_rows_multiple_misses_pushed_late():
+    # 三行相同只读到一纬：匹配第 1 纬，漏纬标到第 2、3 纬（而不是 1、3）。
+    r = run_inspect(["10", "10", "10"], ["10"], 2)
+    assert r.miss_count == 2
+    assert [e["ref_pick"] for e in r.events] == [2, 3]
+    assert [list(m) for m in r.mapping] == [[1], [], []]
+
+
+def test_identical_rows_miss_pushed_late_inside_pattern():
+    # 相同对出现在尾部：读到 01、10，漏纬应标第 3 纬而非第 2 纬。
+    r = run_inspect(["01", "10", "10"], ["01", "10"], 1)
+    assert r.miss_count == 1
+    assert [e["ref_pick"] for e in r.events] == [3]
+    assert [list(m) for m in r.mapping] == [[1], [2], []]
+
+
+def test_identical_rows_repeat_marked_on_earlier_pick():
+    # 相同两纬回读三行时，重纬应标在更靠前的重复纬（第一纬）：
+    # (匹配@1,匹配@2,重纬@1) 排序后在重纬槽位上小于 重纬@2。
+    r = run_inspect(["10", "10"], ["10", "10", "10"], 1)
+    assert r.repeat_count == 1
+    assert [e["ref_pick"] for e in r.events] == [1]
+    assert [list(m) for m in r.mapping] == [[1, 2], [3]]
 
 
 def test_repeated_pick_event_and_mapping():
